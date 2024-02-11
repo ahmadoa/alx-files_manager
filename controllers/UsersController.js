@@ -1,46 +1,47 @@
-import dbClient from '../utils/db';
-import redisClient from '../utils/redis';
+import { ObjectId } from 'mongodb';
 
-const { ObjectId } = require('mongodb');
+const crypto = require('crypto');
+const dbClient = require('../utils/db');
+const redisClient = require('../utils/redis');
 
-const sha1 = require('sha1');
+function hashPasswd(password) {
+  const hash = crypto.createHash('sha1');
+  const data = hash.update(password, 'utf-8');
+  // Creating the hash in the required format
+  const genHash = data.digest('hex');
+  return genHash;
+}
 
-class UserController {
+class UsersController {
   static async postNew(req, res) {
-    const users = await dbClient.db.collection('users');
-    const { email, password } = req.body;
-
-    // if email or password not in request.body
-    if (!email) return res.status(400).send({ error: 'Missing email' });
-    if (!password) return res.status(400).send({ error: 'Missing password' });
-
-    // if user already exists
-    let queryResult = await users.findOne({ email });
-    if (queryResult) {
-      return res.status(400).send({ error: 'Already exist' });
+    const { email } = req.body;
+    const { password } = req.body;
+    const search = await dbClient.db.collection('users').find({ email }).toArray();
+    if (!email) {
+      return (res.status(400).json({ error: 'Missing email' }));
+    } if (!password) {
+      return (res.status(400).json({ error: 'Missing password' }));
+    } if (search.length > 0) {
+      return (res.status(400).json({ error: 'Already exist' }));
     }
-
-    const sha1Password = sha1(password);
-    queryResult = await users.insertOne({ email, password: sha1Password });
-    return res.status(201).send({ id: queryResult.insertedId, email });
+    const hashpwd = hashPasswd(password);
+    const addUser = await dbClient.db.collection('users').insertOne({ email, password: hashpwd });
+    const newUser = { id: addUser.ops[0]._id, email: addUser.ops[0].email };
+    return (res.status(201).json(newUser));
   }
 
   static async getMe(req, res) {
-    // retreive token from request headers
-    const token = req.headers['x-token'];
-    if (!token) return res.status(401).send({ error: 'Unauthorized' });
-
-    // retreive token from redis
-    const userId = await redisClient.get(`auth_${token}`);
-    if (!userId) return res.status(401).send({ error: 'Unauthorized' });
-
-    // retreive user from database
-    const users = await dbClient.db.collection('users');
-    const user = await users.findOne({ _id: ObjectId(userId) });
-    if (!user) return res.status(401).send({ error: 'Unauthorized' });
-
-    return res.send({ id: user._id, email: user.email });
+    const key = req.header('X-Token');
+    const session = await redisClient.get(`auth_${key}`);
+    if (!key || key.length === 0) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (session) {
+      const search = await dbClient.db.collection('users').find({ _id: ObjectId(session) }).toArray();
+      return (res.status(200).json({ id: search[0]._id, email: search[0].email }));
+    }
+    return (res.status(401).json({ error: 'Unauthorized' }));
   }
 }
 
-module.exports = UserController;
+module.exports = UsersController;
